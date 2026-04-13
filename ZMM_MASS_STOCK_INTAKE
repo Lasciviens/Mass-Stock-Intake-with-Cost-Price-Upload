@@ -1,0 +1,29 @@
+*&---------------------------------------------------------------------*
+*& Report ZMM_MASS_STOCK_INTAKE
+*& Mass Stock Intake with Cost Price Upload
+*& Uploads CSV/XLSX stock data and posts goods movements via
+*& BAPI_GOODSMVT_CREATE with a user-specified cost price (VERPR).
+*& SAP recalculates the plant MAP automatically.
+*&
+*& Author: Claude (AI) for Power International AS – SAP App Team
+*& Date:   2026-04-13
+*& Spec:   ZMM_MASS_STOCK_INTAKE_FuncSpec_v1.1
+*&
+*&--------------------------Change Logs--------------------------------*
+*& Date:
+*& Author:
+*& Description:
+*& Transport:
+*&---------------------------------------------------------------------*
+REPORT zmm_mass_stock_intake NO STANDARD PAGE HEADING.
+
+INCLUDE zmm_mass_stock_intake_top.   "Global types & data
+INCLUDE zmm_mass_stock_intake_ssc.   "Selection screen
+INCLUDE zmm_mass_stock_intake_cls.   "Local class lcl_main
+INCLUDE zmm_mass_stock_intake_0100.  "ALV screen 0100 modules
+
+INITIALIZATION.
+  go_main = lcl_main=>get_instance( ).
+
+START-OF-SELECTION.
+  go_main->run( ).
