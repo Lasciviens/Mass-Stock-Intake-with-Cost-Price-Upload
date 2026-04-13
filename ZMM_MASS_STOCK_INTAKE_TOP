@@ -3,51 +3,66 @@
 *&  Global types, constants and data declarations
 *&---------------------------------------------------------------------*
 
+*----------------------------------------------------------------------*
+* Forward declaration of local class (defined in _CLS include)
+*----------------------------------------------------------------------*
 CLASS lcl_main DEFINITION DEFERRED.
 DATA go_main TYPE REF TO lcl_main.
 
 *----------------------------------------------------------------------*
 * CONSTANTS
+* Movement type pairs as specified in functional spec:
+*   561 = Initial stock entry (intake)   562 = Reversal of 561
+*   501 = Receipt without PO (intake)    502 = Reversal of 501
+* gc_verpr_tol = max allowed % deviation between entered VERPR and
+*                current MAP before a warning is shown in the log
 *----------------------------------------------------------------------*
 CONSTANTS:
   gc_mvt_561   TYPE bwart VALUE '561',
   gc_mvt_562   TYPE bwart VALUE '562',
   gc_mvt_501   TYPE bwart VALUE '501',
   gc_mvt_502   TYPE bwart VALUE '502',
-  gc_verpr_tol TYPE p DECIMALS 2 VALUE '50.00',  "Default 50% tolerance
-  gc_max_rows  TYPE i   VALUE 10000.
+  gc_verpr_tol TYPE p DECIMALS 2 VALUE '50.00',
+  gc_max_rows  TYPE i        VALUE 10000.
 
 *----------------------------------------------------------------------*
-* UPLOAD FILE ROW TYPE
+* TYPE: One row from the upload file (CSV or XLSX)
+* Fields map directly to what the user provides in the file
 *----------------------------------------------------------------------*
 TYPES: BEGIN OF ty_upload_row,
-         matnr TYPE matnr,       "Material number (internal 18-char)
-         qty   TYPE menge_d,     "Quantity
-         site  TYPE werks_d,     "Plant
-         sloc  TYPE lgort_d,     "Storage location
-         verpr TYPE verpr,       "Cost price / valuation price
+         matnr TYPE matnr,    "Material number — converted to 18-char internal format
+         qty   TYPE menge,    "Quantity to post — must be > 0
+         site  TYPE werks_d,  "Plant (e.g. 1643)
+         sloc  TYPE lgort_d,  "Storage location within the plant (e.g. 0001)
+         verpr TYPE verpr,    "Cost price of incoming goods — SAP blends into MAP
        END OF ty_upload_row.
 
 TYPES ty_upload_tab TYPE STANDARD TABLE OF ty_upload_row WITH DEFAULT KEY.
 
 *----------------------------------------------------------------------*
-* ALV OUTPUT LOG ROW
+* TYPE: One row in the ALV output log
+* Populated by validate_rows and post_rows; shown after execution
+* STATUS values:
+*   'P' = Posted successfully (live mode only)
+*   'S' = Simulated (test mode) or valid but not yet posted
+*   'W' = Warning — posted but with a remark (e.g. Standard Price material)
+*   'E' = Error — row was skipped, no posting made
 *----------------------------------------------------------------------*
 TYPES: BEGIN OF ty_log_row,
-         row_nr   TYPE i,            "Row number in upload file
-         matnr    TYPE matnr,        "Material number
-         maktx    TYPE maktx,        "Material description
-         qty      TYPE menge_d,      "Quantity
-         meins    TYPE meins,        "Base unit of measure
-         site     TYPE werks_d,      "Plant
-         sloc     TYPE lgort_d,      "Storage location
-         verpr    TYPE verpr,        "Cost price entered
-         curr_map TYPE verpr,        "Current MAP at plant
-         prc_ctrl TYPE preiskz,      "Price control (S/V)
-         status   TYPE c LENGTH 1,   "P=Posted S=Simulated E=Error W=Warning
-         mblnr    TYPE mblnr,        "Material document number
-         mjahr    TYPE mjahr,        "Material document year
-         message  TYPE string,       "Info / warning / error text
+         row_nr   TYPE i,           "Row number in the upload file (1 = first data row)
+         matnr    TYPE matnr,       "Material number
+         maktx    TYPE maktx,       "Material description (read from MAKT)
+         qty      TYPE menge,       "Quantity from upload
+         meins    TYPE meins,       "Base unit of measure (read from MARA)
+         site     TYPE werks_d,     "Plant
+         sloc     TYPE lgort_d,     "Storage location
+         verpr    TYPE verpr,       "Cost price entered in the upload file
+         curr_map TYPE verpr,       "Current moving average price at the plant (from MBEW)
+         prc_ctrl TYPE preiskz,     "Price control: 'V' = MAP, 'S' = Standard Price
+         status   TYPE c LENGTH 1,  "P / S / W / E (see above)
+         mblnr    TYPE mblnr,       "Material document number — filled after successful posting
+         mjahr    TYPE mjahr,       "Material document year
+         message  TYPE string,      "Info, warning, or error text for this row
        END OF ty_log_row.
 
 TYPES ty_log_tab TYPE STANDARD TABLE OF ty_log_row WITH DEFAULT KEY.
@@ -55,10 +70,11 @@ TYPES ty_log_tab TYPE STANDARD TABLE OF ty_log_row WITH DEFAULT KEY.
 *----------------------------------------------------------------------*
 * GLOBAL DATA
 *----------------------------------------------------------------------*
-DATA: gt_log      TYPE ty_log_tab,
-      go_alv_grid TYPE REF TO cl_gui_alv_grid,
-      go_alv_cont TYPE REF TO cl_gui_custom_container,
-      gs_stable   TYPE lvc_s_stbl.
+DATA: gt_log      TYPE ty_log_tab,              "ALV output — all processed rows
+      go_alv_grid TYPE REF TO cl_gui_alv_grid,  "ALV grid object
+      go_alv_cont TYPE REF TO cl_gui_custom_container, "Container for ALV grid
+      gs_stable   TYPE lvc_s_stbl.              "Stable scroll: keep position on refresh
 
+" Keep the ALV scroll position stable (do not jump to top on refresh)
 gs_stable-row = abap_true.
 gs_stable-col = abap_true.
