@@ -1,10 +1,28 @@
 *&---------------------------------------------------------------------*
 *&  Include           ZMM_MASS_STOCK_INTAKE_SSC
 *&  Selection screen definition
+*&
+*&  Blocks:
+*&    b_file — File upload path
+*&    b_post — Posting options (movement type, date, texts)
+*&    b_test — Test mode flag
+*&
+*&  Text elements to maintain in SE38 (Goto -> Text Elements):
+*&    TEXT-t01  = 'File Upload'
+*&    TEXT-t02  = 'Posting Options'
+*&    TEXT-t03  = 'Test / Simulation Mode'
+*&    TEXT-rb1  = '561 / 562  -  Initial stock entry (no reference document)'
+*&    TEXT-rb2  = '501 / 502  -  Goods receipt without Purchase Order'
+*&    TEXT-p01  = 'Posting Date'
+*&    TEXT-p02  = 'Header Text'
+*&    TEXT-p03  = 'Reference'
+*&    TEXT-p04  = 'Simulate only - do not post'
 *&---------------------------------------------------------------------*
 
 *----------------------------------------------------------------------*
-* FILE UPLOAD
+* BLOCK 1 — FILE UPLOAD
+* p_file: full local path to the CSV or XLSX file.
+* The F4 button (AT SELECTION-SCREEN event below) opens a file dialog.
 *----------------------------------------------------------------------*
 SELECTION-SCREEN BEGIN OF BLOCK b_file WITH FRAME TITLE TEXT-t01.
   PARAMETERS: p_file TYPE localfile OBLIGATORY.
@@ -13,36 +31,42 @@ SELECTION-SCREEN END OF BLOCK b_file.
 SELECTION-SCREEN SKIP 1.
 
 *----------------------------------------------------------------------*
-* POSTING OPTIONS
+* BLOCK 2 — POSTING OPTIONS
+* rb_561 / rb_501: radio group — user picks which movement type pair.
+* p_budat: accounting posting date (defaults to today).
+* p_bktxt: free text written to the material document header.
+* p_xblnr: optional external reference / note (e.g. 'Nedleggelse 1659').
 *----------------------------------------------------------------------*
 SELECTION-SCREEN BEGIN OF BLOCK b_post WITH FRAME TITLE TEXT-t02.
 
-  " Movement type pair (radio group)
-  PARAMETERS: rb_561 RADIOBUTTON GROUP mvt DEFAULT 'X',
-              rb_501 RADIOBUTTON GROUP mvt.
+  PARAMETERS: rb_561 RADIOBUTTON GROUP mvt DEFAULT 'X',   "561/562
+              rb_501 RADIOBUTTON GROUP mvt.               "501/502
 
   SELECTION-SCREEN SKIP 1.
 
-  PARAMETERS: p_budat TYPE budat DEFAULT sy-datum OBLIGATORY.
+  PARAMETERS: p_budat TYPE budat  DEFAULT sy-datum OBLIGATORY.
   PARAMETERS: p_bktxt TYPE bktxt.
-  PARAMETERS: p_xblnr TYPE xblnr_d.
+  PARAMETERS: p_xblnr TYPE xblnr1.
 
 SELECTION-SCREEN END OF BLOCK b_post.
 
 SELECTION-SCREEN SKIP 1.
 
 *----------------------------------------------------------------------*
-* TEST MODE
+* BLOCK 3 — TEST / SIMULATION MODE
+* Default is checked (active). When active, all validation runs
+* and the ALV log is fully populated, but BAPI is NOT called.
+* The ALV header shows a warning banner when simulation is on.
 *----------------------------------------------------------------------*
 SELECTION-SCREEN BEGIN OF BLOCK b_test WITH FRAME TITLE TEXT-t03.
   PARAMETERS: p_test AS CHECKBOX DEFAULT 'X'.
 SELECTION-SCREEN END OF BLOCK b_test.
 
 *----------------------------------------------------------------------*
-* SELECTION SCREEN EVENTS
+* F4 HELP — FILE BROWSER
+* Opens a local file dialog when the user presses F4 on the file field.
 *----------------------------------------------------------------------*
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
-  " Open file browser dialog (F4 help)
   CALL FUNCTION 'KD_GET_FILENAME_ON_F4'
     EXPORTING
       static    = abap_true
