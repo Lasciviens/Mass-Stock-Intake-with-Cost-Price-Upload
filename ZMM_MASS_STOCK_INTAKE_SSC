@@ -1,0 +1,51 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZMM_MASS_STOCK_INTAKE_SSC
+*&  Selection screen definition
+*&---------------------------------------------------------------------*
+
+*----------------------------------------------------------------------*
+* FILE UPLOAD
+*----------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK b_file WITH FRAME TITLE TEXT-t01.
+  PARAMETERS: p_file TYPE localfile OBLIGATORY.
+SELECTION-SCREEN END OF BLOCK b_file.
+
+SELECTION-SCREEN SKIP 1.
+
+*----------------------------------------------------------------------*
+* POSTING OPTIONS
+*----------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK b_post WITH FRAME TITLE TEXT-t02.
+
+  " Movement type pair (radio group)
+  PARAMETERS: rb_561 RADIOBUTTON GROUP mvt DEFAULT 'X',
+              rb_501 RADIOBUTTON GROUP mvt.
+
+  SELECTION-SCREEN SKIP 1.
+
+  PARAMETERS: p_budat TYPE budat DEFAULT sy-datum OBLIGATORY.
+  PARAMETERS: p_bktxt TYPE bktxt.
+  PARAMETERS: p_xblnr TYPE xblnr_d.
+
+SELECTION-SCREEN END OF BLOCK b_post.
+
+SELECTION-SCREEN SKIP 1.
+
+*----------------------------------------------------------------------*
+* TEST MODE
+*----------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK b_test WITH FRAME TITLE TEXT-t03.
+  PARAMETERS: p_test AS CHECKBOX DEFAULT 'X'.
+SELECTION-SCREEN END OF BLOCK b_test.
+
+*----------------------------------------------------------------------*
+* SELECTION SCREEN EVENTS
+*----------------------------------------------------------------------*
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  " Open file browser dialog (F4 help)
+  CALL FUNCTION 'KD_GET_FILENAME_ON_F4'
+    EXPORTING
+      static    = abap_true
+      mask      = '*.csv;*.xlsx'
+    CHANGING
+      file_name = p_file.
