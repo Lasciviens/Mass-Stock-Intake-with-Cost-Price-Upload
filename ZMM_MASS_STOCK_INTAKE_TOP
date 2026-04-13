@@ -1,0 +1,64 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZMM_MASS_STOCK_INTAKE_TOP
+*&  Global types, constants and data declarations
+*&---------------------------------------------------------------------*
+
+CLASS lcl_main DEFINITION DEFERRED.
+DATA go_main TYPE REF TO lcl_main.
+
+*----------------------------------------------------------------------*
+* CONSTANTS
+*----------------------------------------------------------------------*
+CONSTANTS:
+  gc_mvt_561   TYPE bwart VALUE '561',
+  gc_mvt_562   TYPE bwart VALUE '562',
+  gc_mvt_501   TYPE bwart VALUE '501',
+  gc_mvt_502   TYPE bwart VALUE '502',
+  gc_verpr_tol TYPE p DECIMALS 2 VALUE '50.00',  "Default 50% tolerance
+  gc_max_rows  TYPE i   VALUE 10000.
+
+*----------------------------------------------------------------------*
+* UPLOAD FILE ROW TYPE
+*----------------------------------------------------------------------*
+TYPES: BEGIN OF ty_upload_row,
+         matnr TYPE matnr,       "Material number (internal 18-char)
+         qty   TYPE menge_d,     "Quantity
+         site  TYPE werks_d,     "Plant
+         sloc  TYPE lgort_d,     "Storage location
+         verpr TYPE verpr,       "Cost price / valuation price
+       END OF ty_upload_row.
+
+TYPES ty_upload_tab TYPE STANDARD TABLE OF ty_upload_row WITH DEFAULT KEY.
+
+*----------------------------------------------------------------------*
+* ALV OUTPUT LOG ROW
+*----------------------------------------------------------------------*
+TYPES: BEGIN OF ty_log_row,
+         row_nr   TYPE i,            "Row number in upload file
+         matnr    TYPE matnr,        "Material number
+         maktx    TYPE maktx,        "Material description
+         qty      TYPE menge_d,      "Quantity
+         meins    TYPE meins,        "Base unit of measure
+         site     TYPE werks_d,      "Plant
+         sloc     TYPE lgort_d,      "Storage location
+         verpr    TYPE verpr,        "Cost price entered
+         curr_map TYPE verpr,        "Current MAP at plant
+         prc_ctrl TYPE preiskz,      "Price control (S/V)
+         status   TYPE c LENGTH 1,   "P=Posted S=Simulated E=Error W=Warning
+         mblnr    TYPE mblnr,        "Material document number
+         mjahr    TYPE mjahr,        "Material document year
+         message  TYPE string,       "Info / warning / error text
+       END OF ty_log_row.
+
+TYPES ty_log_tab TYPE STANDARD TABLE OF ty_log_row WITH DEFAULT KEY.
+
+*----------------------------------------------------------------------*
+* GLOBAL DATA
+*----------------------------------------------------------------------*
+DATA: gt_log      TYPE ty_log_tab,
+      go_alv_grid TYPE REF TO cl_gui_alv_grid,
+      go_alv_cont TYPE REF TO cl_gui_custom_container,
+      gs_stable   TYPE lvc_s_stbl.
+
+gs_stable-row = abap_true.
+gs_stable-col = abap_true.
