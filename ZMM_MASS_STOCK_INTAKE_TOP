@@ -1,64 +1,70 @@
-*&---------------------------------------------------------------------*
-*&  Include           ZMM_MASS_STOCK_INTAKE_TOP
-*&  Global types, constants and data declarations
-*&---------------------------------------------------------------------*
+*&======================================================================*
+*&  Include  ZMM_MASS_STOCK_INTAKE_TOP
+*&  Global type definitions, constants, and data declarations.
+*&  NOTE: No INITIALIZATION block here — only one is allowed per program.
+*&        gs_stable is initialised in the main report INITIALIZATION.
+*&======================================================================*
 
+" Forward declaration so lcl_main can be referenced in DATA statements.
 CLASS lcl_main DEFINITION DEFERRED.
-DATA go_main TYPE REF TO lcl_main.
 
-*----------------------------------------------------------------------*
-* CONSTANTS
-*----------------------------------------------------------------------*
-CONSTANTS:
-  gc_mvt_561   TYPE bwart VALUE '561',
-  gc_mvt_562   TYPE bwart VALUE '562',
-  gc_mvt_501   TYPE bwart VALUE '501',
-  gc_mvt_502   TYPE bwart VALUE '502',
-  gc_verpr_tol TYPE p DECIMALS 2 VALUE '50.00',  "Default 50% tolerance
-  gc_max_rows  TYPE i   VALUE 10000.
+" -----------------------------------------------------------------------
+"  TYPES
+" -----------------------------------------------------------------------
 
-*----------------------------------------------------------------------*
-* UPLOAD FILE ROW TYPE
-*----------------------------------------------------------------------*
+" One row as parsed from the CSV / XLSX input file.
+" Field names match the spec column names (Section 3).
 TYPES: BEGIN OF ty_upload_row,
-         matnr TYPE matnr,       "Material number (internal 18-char)
-         qty   TYPE menge_d,     "Quantity
-         site  TYPE werks_d,     "Plant
-         sloc  TYPE lgort_d,     "Storage location
-         verpr TYPE verpr,       "Cost price / valuation price
+         row_nr  TYPE i,          " Row number in the source file (for error messages)
+         matnr   TYPE matnr,      " Material number -- 18-digit internal format
+         qty     TYPE menge_d,    " Quantity to post; must be > 0
+         site    TYPE werks_d,    " Plant / Site (e.g. 1643)
+         sloc    TYPE lgort_d,    " Storage location within the plant
+         verpr   TYPE verpr,      " Cost price of the incoming goods
        END OF ty_upload_row.
 
-TYPES ty_upload_tab TYPE STANDARD TABLE OF ty_upload_row WITH DEFAULT KEY.
+TYPES: ty_upload_tab TYPE STANDARD TABLE OF ty_upload_row WITH DEFAULT KEY.
 
-*----------------------------------------------------------------------*
-* ALV OUTPUT LOG ROW
-*----------------------------------------------------------------------*
-TYPES: BEGIN OF ty_log_row,
-         row_nr   TYPE i,            "Row number in upload file
-         matnr    TYPE matnr,        "Material number
-         maktx    TYPE maktx,        "Material description
-         qty      TYPE menge_d,      "Quantity
-         meins    TYPE meins,        "Base unit of measure
-         site     TYPE werks_d,      "Plant
-         sloc     TYPE lgort_d,      "Storage location
-         verpr    TYPE verpr,        "Cost price entered
-         curr_map TYPE verpr,        "Current MAP at plant
-         prc_ctrl TYPE preiskz,      "Price control (S/V)
-         status   TYPE c LENGTH 1,   "P=Posted S=Simulated E=Error W=Warning
-         mblnr    TYPE mblnr,        "Material document number
-         mjahr    TYPE mjahr,        "Material document year
-         message  TYPE string,       "Info / warning / error text
-       END OF ty_log_row.
+" Status field length.  Fixed char so it can be coloured in the ALV.
+TYPES: ty_status TYPE c LENGTH 20.
 
-TYPES ty_log_tab TYPE STANDARD TABLE OF ty_log_row WITH DEFAULT KEY.
+" One ALV output row -- one per upload row regardless of success/failure.
+" Spec reference: Section 6.
+TYPES: BEGIN OF ty_alv_row,
+         row_nr   TYPE i,              " Source row number from the file
+         matnr    TYPE matnr,          " Material number (display format, no leading zeros)
+         maktx    TYPE maktx,          " Material short description
+         qty      TYPE menge_d,        " Quantity from upload
+         meins    TYPE meins,          " Base unit of measure from MARA
+         site     TYPE werks_d,        " Plant
+         sloc     TYPE lgort_d,        " Storage location
+         verpr    TYPE verpr,          " Cost price passed in upload
+         pric_ctl TYPE mbew-vprsv,     " Price control: S = Standard, V = Moving Average
+         status   TYPE ty_status,      " Posted / Simulated / Error / Warning
+         matdoc   TYPE mblnr,          " Material document number (live mode only)
+         message  TYPE string,         " Combined info / warning / error text for this row
+         scol     TYPE lvc_t_scol,     " Row colour (set by set_row_color method)
+       END OF ty_alv_row.
 
-*----------------------------------------------------------------------*
-* GLOBAL DATA
-*----------------------------------------------------------------------*
-DATA: gt_log      TYPE ty_log_tab,
-      go_alv_grid TYPE REF TO cl_gui_alv_grid,
-      go_alv_cont TYPE REF TO cl_gui_custom_container,
-      gs_stable   TYPE lvc_s_stbl.
+TYPES: ty_alv_tab TYPE STANDARD TABLE OF ty_alv_row WITH DEFAULT KEY.
 
-gs_stable-row = abap_true.
-gs_stable-col = abap_true.
+" -----------------------------------------------------------------------
+"  STATUS TEXT CONSTANTS
+"  Displayed in the ALV STATUS column (Section 6).
+" -----------------------------------------------------------------------
+CONSTANTS: mc_status_posted TYPE ty_status VALUE 'Posted',
+           mc_status_sim    TYPE ty_status VALUE 'Simulated',
+           mc_status_error  TYPE ty_status VALUE 'Error',
+           mc_status_warn   TYPE ty_status VALUE 'Warning'.
+
+" -----------------------------------------------------------------------
+"  VERPR DEVIATION TOLERANCE  (Section 5.2, row 9 -- Open Point #3)
+"  Recommended threshold is 50%. Change this constant once confirmed.
+" -----------------------------------------------------------------------
+CONSTANTS: mc_deviation_pct TYPE p DECIMALS 2 VALUE '50.00'.
+
+" -----------------------------------------------------------------------
+"  GLOBAL OBJECTS / DATA
+" -----------------------------------------------------------------------
+DATA: go_main   TYPE REF TO lcl_main.  " Singleton instance of the main class
+DATA: gs_stable TYPE lvc_s_stbl.       " Stable-scroll flags for ALV refresh
