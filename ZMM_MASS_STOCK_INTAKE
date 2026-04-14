@@ -1,28 +1,28 @@
-*&---------------------------------------------------------------------*
-*& Report ZMM_MASS_STOCK_INTAKE
-*& Mass Stock Intake with Cost Price Upload
-*& Uploads CSV/XLSX stock data and posts goods movements via
-*& BAPI_GOODSMVT_CREATE with a user-specified cost price (VERPR).
-*& SAP recalculates the plant MAP automatically.
+*&======================================================================*
+*&  REPORT  ZMM_MASS_STOCK_INTAKE
+*&  Mass Stock Intake with Cost Price Upload
 *&
-*& Author: Claude (AI) for Power International AS – SAP App Team
-*& Date:   2026-04-13
-*& Spec:   ZMM_MASS_STOCK_INTAKE_FuncSpec_v1.1
+*&  Posts goods movements (mvt 561 or 501) with a per-line cost price
+*&  (VERPR).  SAP recalculates the plant MAP automatically via standard
+*&  BAPI_GOODSMVT_CREATE logic — no MR21 required.
 *&
-*&--------------------------Change Logs--------------------------------*
-*& Date:
-*& Author:
-*& Description:
-*& Transport:
-*&---------------------------------------------------------------------*
+*&  Spec:    ZMM_MASS_STOCK_INTAKE_FuncSpec_v1.1
+*&  Author:  Power International AS — SAP Application Team
+*&  Date:    2026-04-10
+*&  Version: 1.1
+*&======================================================================*
 REPORT zmm_mass_stock_intake NO STANDARD PAGE HEADING.
 
-INCLUDE zmm_mass_stock_intake_top.   "Global types & data
-INCLUDE zmm_mass_stock_intake_ssc.   "Selection screen
-INCLUDE zmm_mass_stock_intake_cls.   "Local class lcl_main
-INCLUDE zmm_mass_stock_intake_0100.  "ALV screen 0100 modules
+INCLUDE zmm_mass_stock_intake_top.   " Global data, types, constants
+INCLUDE zmm_mass_stock_intake_ssc.   " Selection screen definition
+INCLUDE zmm_mass_stock_intake_cls.   " Main class implementation
+INCLUDE zmm_mass_stock_intake_alv.   " ALV screen (screen 0100)
 
 INITIALIZATION.
+  " Initialise stable-scroll flags here (only one INITIALIZATION per program).
+  gs_stable-row = abap_true.
+  gs_stable-col = abap_true.
+  " Create singleton instance before the selection screen is shown.
   go_main = lcl_main=>get_instance( ).
 
 START-OF-SELECTION.

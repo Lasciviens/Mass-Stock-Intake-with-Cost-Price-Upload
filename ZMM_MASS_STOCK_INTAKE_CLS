@@ -1,599 +1,706 @@
-*&---------------------------------------------------------------------*
-*&  Include           ZMM_MASS_STOCK_INTAKE_CLS
-*&  Local class lcl_main — all program logic
-*&---------------------------------------------------------------------*
+*&======================================================================*
+*&  Include  ZMM_MASS_STOCK_INTAKE_CLS
+*&  Main class: file parsing, validation, BAPI posting.
+*&======================================================================*
 
 CLASS lcl_main DEFINITION.
   PUBLIC SECTION.
 
     CLASS-METHODS:
       get_instance
-        RETURNING
-          VALUE(ro_main) TYPE REF TO lcl_main.
+        RETURNING VALUE(ro_main) TYPE REF TO lcl_main.
 
     METHODS:
       run,
-
-      " File parsing
-      parse_file
-        IMPORTING
-          iv_file    TYPE localfile
-        RETURNING
-          VALUE(rt_rows) TYPE ty_upload_tab,
-
-      parse_csv
-        IMPORTING
-          iv_file    TYPE localfile
-        RETURNING
-          VALUE(rt_rows) TYPE ty_upload_tab,
-
-      parse_xlsx
-        IMPORTING
-          iv_file    TYPE localfile
-        RETURNING
-          VALUE(rt_rows) TYPE ty_upload_tab,
-
-      detect_csv_delimiter
-        IMPORTING
-          iv_line       TYPE string
-        RETURNING
-          VALUE(rv_del) TYPE c,
-
-      " Validation
-      validate_rows
-        IMPORTING
-          it_rows   TYPE ty_upload_tab
-        CHANGING
-          ct_log    TYPE ty_log_tab,
-
-      " Posting
-      post_rows
-        CHANGING
-          ct_log    TYPE ty_log_tab,
-
-      " ALV
       display_alv,
-      build_fieldcat
-        RETURNING
-          VALUE(rt_fcat) TYPE lvc_t_fcat,
-      build_layout
-        RETURNING
-          VALUE(rs_layout) TYPE lvc_s_layo.
+      call_screen_0100.
 
   PRIVATE SECTION.
 
-    CLASS-DATA go_instance TYPE REF TO lcl_main.
+    CLASS-DATA:
+      mo_instance TYPE REF TO lcl_main.
 
-    DATA mv_mvt_intake  TYPE bwart.   "Movement type for intake (501 or 561)
-    DATA mv_mvt_reverse TYPE bwart.   "Reversal type (502 or 562)
-    DATA mv_test_mode   TYPE abap_bool.
+    CONSTANTS:
+      mc_alv_container TYPE dd02l-tabname VALUE 'CON_ALV_MAIN'.
+
+    DATA:
+      mo_container TYPE REF TO cl_gui_custom_container,
+      mo_alv_grid  TYPE REF TO cl_gui_alv_grid.
+
+    DATA:
+      mt_upload TYPE ty_upload_tab,
+      mt_alv    TYPE ty_alv_tab.
+
+    DATA: mv_bwart TYPE bwart.
+
+    METHODS:
+      resolve_mvt_type,
+
+      parse_file
+        RETURNING VALUE(rv_ok) TYPE abap_bool,
+
+      parse_csv
+        IMPORTING iv_path      TYPE string
+        RETURNING VALUE(rv_ok) TYPE abap_bool,
+
+      parse_xlsx
+        IMPORTING iv_path      TYPE string
+        RETURNING VALUE(rv_ok) TYPE abap_bool,
+
+      convert_matnr
+        IMPORTING iv_matnr        TYPE any
+        RETURNING VALUE(rv_matnr) TYPE matnr,
+
+      validate_rows,
+      post_rows,
+
+      build_bapi_header
+        RETURNING VALUE(rs_header) TYPE bapi2017_gm_head_01,
+
+      build_bapi_item
+        IMPORTING is_row        TYPE ty_upload_row
+                  iv_meins      TYPE meins
+        RETURNING VALUE(rs_item) TYPE bapi2017_gm_item_create,
+
+      build_fcat
+        CHANGING ct_fcat TYPE lvc_t_fcat,
+
+      build_layout
+        RETURNING VALUE(rs_layout) TYPE lvc_s_layo,
+
+      set_row_color
+        IMPORTING iv_status        TYPE ty_status
+        RETURNING VALUE(rt_color)  TYPE lvc_t_scol,
+
+      append_message
+        IMPORTING iv_msg TYPE string
+        CHANGING  cs_alv TYPE ty_alv_row.
 
 ENDCLASS.
 
 
 CLASS lcl_main IMPLEMENTATION.
 
-*----------------------------------------------------------------------*
   METHOD get_instance.
-    IF go_instance IS NOT BOUND.
-      go_instance = NEW lcl_main( ).
+    IF mo_instance IS INITIAL.
+      mo_instance = NEW lcl_main( ).
     ENDIF.
-    ro_main = go_instance.
+    ro_main = mo_instance.
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
   METHOD run.
-
-    " Set movement types from radio buttons
-    IF rb_561 = abap_true.
-      mv_mvt_intake  = gc_mvt_561.
-      mv_mvt_reverse = gc_mvt_562.
-    ELSE.
-      mv_mvt_intake  = gc_mvt_501.
-      mv_mvt_reverse = gc_mvt_502.
-    ENDIF.
-
-    mv_test_mode = COND #( WHEN p_test = abap_true THEN abap_true ELSE abap_false ).
-
-    " 1. Parse uploaded file
-    DATA(lt_rows) = parse_file( p_file ).
-
-    IF lt_rows IS INITIAL.
-      MESSAGE 'No valid rows could be read from the uploaded file.' TYPE 'E'.
+    me->resolve_mvt_type( ).
+    IF me->parse_file( ) = abap_false.
+      MESSAGE 'File could not be read. Check path and format.' TYPE 'E'.
       RETURN.
     ENDIF.
-
-    " 2. Validate all rows -> populate gt_log
-    CLEAR gt_log.
-    validate_rows(
-      EXPORTING it_rows = lt_rows
-      CHANGING  ct_log  = gt_log ).
-
-    " 3. Post valid rows (skip in test mode: status stays 'S')
-    post_rows( CHANGING ct_log = gt_log ).
-
-    " 4. Display ALV
-    CALL SCREEN 100.
-
+    me->validate_rows( ).
+    me->post_rows( ).
+    me->call_screen_0100( ).
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
-  METHOD parse_file.
-
-    DATA(lv_ext) = to_upper( p_file+( strlen( p_file ) - 4 ) ).
-
-    IF lv_ext = 'XLSX'.
-      rt_rows = parse_xlsx( iv_file ).
+  METHOD resolve_mvt_type.
+    IF p_561 = abap_true.
+      mv_bwart = '561'.
     ELSE.
-      rt_rows = parse_csv( iv_file ).
+      mv_bwart = '501'.
     ENDIF.
-
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
+  METHOD parse_file.
+    DATA: lv_path_upper TYPE string.
+    lv_path_upper = p_file.
+    TRANSLATE lv_path_upper TO UPPER CASE.
+    REFRESH me->mt_upload.
+    IF lv_path_upper CS '.XLSX'.
+      rv_ok = me->parse_xlsx( iv_path = p_file ).
+    ELSE.
+      rv_ok = me->parse_csv( iv_path = p_file ).
+    ENDIF.
+    IF me->mt_upload IS INITIAL.
+      rv_ok = abap_false.
+    ENDIF.
+  ENDMETHOD.
+
   METHOD parse_csv.
+    rv_ok = abap_false.
+    DATA: lt_rawdata TYPE TABLE OF text255.
 
-    DATA: lt_raw  TYPE TABLE OF string,
-          lv_line TYPE string,
-          lv_del  TYPE c,
-          lv_row  TYPE i.
-
-    " Read local file into string table
     CALL FUNCTION 'GUI_UPLOAD'
       EXPORTING
-        filename = CONV localfile( iv_file )
+        filename = iv_path
         filetype = 'ASC'
       TABLES
-        data_tab = lt_raw
+        data_tab = lt_rawdata
       EXCEPTIONS
-        OTHERS   = 1.
+        OTHERS   = 4.
 
     IF sy-subrc <> 0.
-      MESSAGE |Cannot read file: { iv_file }| TYPE 'E'.
+      MESSAGE |CSV upload failed. Check path: { iv_path }| TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+    IF lt_rawdata IS INITIAL.
+      MESSAGE 'The uploaded CSV file is empty.' TYPE 'S' DISPLAY LIKE 'E'.
       RETURN.
     ENDIF.
 
-    " Skip header row — detect delimiter from first data line
-    LOOP AT lt_raw INTO lv_line.
-      IF sy-tabix = 1.
-        " Skip header
-        lv_del = detect_csv_delimiter( lv_line ).
-        CONTINUE.
-      ENDIF.
+    READ TABLE lt_rawdata INTO DATA(lv_header) INDEX 1.
+    DATA: lv_delim TYPE c LENGTH 1.
+    lv_delim = COND #( WHEN lv_header CS ';' THEN ';' ELSE ',' ).
 
-      " Strip whitespace
-      CONDENSE lv_line.
-      IF lv_line IS INITIAL.
-        CONTINUE.
-      ENDIF.
+    " BUG FIX #2: start at 0 so row 1 (header) is correctly skipped.
+    " With VALUE 1 the counter would be 2 on the first iteration,
+    " CHECK 2 > 1 = TRUE, and the header row would be processed as data.
+    DATA: lv_row_nr TYPE i VALUE 0.
 
-      lv_row = sy-tabix - 1.   "1-based row counter (excl. header)
+    LOOP AT lt_rawdata INTO DATA(lv_raw_line).
+      lv_row_nr = lv_row_nr + 1.
+      CHECK lv_row_nr > 1.
 
-      " Split by delimiter
-      DATA(lt_fields) = VALUE stringtab( ).
-      SPLIT lv_line AT lv_del INTO TABLE lt_fields.
+      CONDENSE lv_raw_line.
+      CHECK lv_raw_line IS NOT INITIAL.
+
+      DATA: lt_fields TYPE TABLE OF string.
+      SPLIT lv_raw_line AT lv_delim INTO TABLE lt_fields.
 
       IF lines( lt_fields ) < 5.
-        " Not enough fields — log as error later in validate
-        DATA(ls_bad) = VALUE ty_upload_row( ).
-        APPEND ls_bad TO rt_rows.
+        APPEND VALUE ty_upload_row( row_nr = lv_row_nr - 1 ) TO me->mt_upload.
         CONTINUE.
       ENDIF.
 
-      DATA(ls_row) = VALUE ty_upload_row( ).
+      DATA: lv_matnr_s TYPE string,
+            lv_qty_s   TYPE string,
+            lv_site_s  TYPE string,
+            lv_sloc_s  TYPE string,
+            lv_verpr_s TYPE string.
 
-      " MATNR — apply ALPHA conversion
-      DATA(lv_matnr_raw) = CONV matnr( condense( lt_fields[ 1 ] ) ).
-      CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
-        EXPORTING input  = lv_matnr_raw
-        IMPORTING output = ls_row-matnr.
+      lv_matnr_s = lt_fields[ 1 ]. CONDENSE lv_matnr_s.
+      lv_qty_s   = lt_fields[ 2 ]. CONDENSE lv_qty_s.
+      lv_site_s  = lt_fields[ 3 ]. CONDENSE lv_site_s.
+      lv_sloc_s  = lt_fields[ 4 ]. CONDENSE lv_sloc_s.
+      lv_verpr_s = lt_fields[ 5 ]. CONDENSE lv_verpr_s.
 
-      " QTY
-      DATA(lv_qty_str) = condense( lt_fields[ 2 ] ).
-      REPLACE ALL OCCURRENCES OF ',' IN lv_qty_str WITH '.'.
-      ls_row-qty = CONV menge_d( lv_qty_str ).
+      REPLACE ALL OCCURRENCES OF ',' IN lv_qty_s   WITH '.'.
+      REPLACE ALL OCCURRENCES OF ',' IN lv_verpr_s WITH '.'.
 
-      " SITE
-      ls_row-site = CONV werks_d( condense( lt_fields[ 3 ] ) ).
+      APPEND VALUE ty_upload_row(
+        row_nr = lv_row_nr - 1
+        matnr  = me->convert_matnr( lv_matnr_s )
+        qty    = lv_qty_s
+        site   = lv_site_s
+        sloc   = lv_sloc_s
+        verpr  = lv_verpr_s
+      ) TO me->mt_upload.
 
-      " SLOC
-      ls_row-sloc = CONV lgort_d( condense( lt_fields[ 4 ] ) ).
-
-      " VERPR
-      DATA(lv_verpr_str) = condense( lt_fields[ 5 ] ).
-      REPLACE ALL OCCURRENCES OF ',' IN lv_verpr_str WITH '.'.
-      ls_row-verpr = CONV verpr( lv_verpr_str ).
-
-      APPEND ls_row TO rt_rows.
-
+      CLEAR lt_fields.
     ENDLOOP.
 
+    rv_ok = abap_true.
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
   METHOD parse_xlsx.
+    rv_ok = abap_false.
+    DATA: lt_excel TYPE TABLE OF alsmex_tabline.
 
-    DATA: lt_excel  TYPE TABLE OF alsmex_tabline,
-          ls_excel  TYPE alsmex_tabline,
-          lv_row    TYPE i VALUE 0,
-          ls_row    TYPE ty_upload_row.
-
-    " Use ALSM_EXCEL_TO_INTERNAL_TABLE for .xlsx upload
     CALL FUNCTION 'ALSM_EXCEL_TO_INTERNAL_TABLE'
       EXPORTING
-        filename                = CONV rlgrap-filename( iv_file )
-        i_begin_col             = 1
-        i_begin_row             = 2   "Row 1 = header, start from row 2
-        i_end_col               = 5
-        i_end_row               = gc_max_rows
+        filename    = CONV rlgrap-filename( iv_path )
+        i_begin_col = 1
+        i_begin_row = 2
+        i_end_col   = 5
+        i_end_row   = 99999
       TABLES
-        intern                  = lt_excel
+        intern      = lt_excel
       EXCEPTIONS
-        inconsistent_parameters = 1
-        upload_ole              = 2
-        OTHERS                  = 3.
+        OTHERS      = 4.
 
     IF sy-subrc <> 0.
-      MESSAGE |Cannot read XLSX file: { iv_file }| TYPE 'E'.
+      MESSAGE |XLSX read failed. Check path: { iv_path }| TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+    IF lt_excel IS INITIAL.
+      MESSAGE 'XLSX file has no data rows below the header.' TYPE 'S' DISPLAY LIKE 'E'.
       RETURN.
     ENDIF.
 
-    DATA(lv_cur_row) = 0.
-    LOOP AT lt_excel INTO ls_excel.
+    DATA: lv_prev_row TYPE i VALUE 0.
+    DATA: ls_upload   TYPE ty_upload_row.
 
-      IF ls_excel-row <> lv_cur_row.
-        " New row — save previous
-        IF lv_cur_row > 0.
-          APPEND ls_row TO rt_rows.
-          CLEAR ls_row.
-        ENDIF.
-        lv_cur_row = ls_excel-row.
+    LOOP AT lt_excel INTO DATA(ls_cell).
+      IF ls_cell-row <> lv_prev_row AND lv_prev_row > 0.
+        APPEND ls_upload TO me->mt_upload.
+        CLEAR ls_upload.
       ENDIF.
 
-      DATA(lv_val) = condense( ls_excel-value ).
+      ls_upload-row_nr = ls_cell-row - 1.
 
-      CASE ls_excel-col.
-        WHEN 1. " MATNR
-          CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
-            EXPORTING input  = CONV matnr( lv_val )
-            IMPORTING output = ls_row-matnr.
-        WHEN 2. " QTY
-          REPLACE ALL OCCURRENCES OF ',' IN lv_val WITH '.'.
-          ls_row-qty = CONV menge_d( lv_val ).
-        WHEN 3. " SITE
-          ls_row-site = CONV werks_d( lv_val ).
-        WHEN 4. " SLOC
-          ls_row-sloc = CONV lgort_d( lv_val ).
-        WHEN 5. " VERPR
-          REPLACE ALL OCCURRENCES OF ',' IN lv_val WITH '.'.
-          ls_row-verpr = CONV verpr( lv_val ).
+      CASE ls_cell-col.
+        WHEN 1.
+          ls_upload-matnr = me->convert_matnr( ls_cell-value ).
+        WHEN 2.
+          DATA(lv_qty_s) = ls_cell-value.
+          REPLACE ALL OCCURRENCES OF ',' IN lv_qty_s WITH '.'.
+          ls_upload-qty = lv_qty_s.
+        WHEN 3.
+          ls_upload-site = ls_cell-value.
+        WHEN 4.
+          ls_upload-sloc = ls_cell-value.
+        WHEN 5.
+          DATA(lv_vpr_s) = ls_cell-value.
+          REPLACE ALL OCCURRENCES OF ',' IN lv_vpr_s WITH '.'.
+          ls_upload-verpr = lv_vpr_s.
       ENDCASE.
 
+      lv_prev_row = ls_cell-row.
     ENDLOOP.
 
-    " Append last row
-    IF lv_cur_row > 0.
-      APPEND ls_row TO rt_rows.
+    IF ls_upload-row_nr > 0.
+      APPEND ls_upload TO me->mt_upload.
     ENDIF.
 
+    rv_ok = abap_true.
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
-  METHOD detect_csv_delimiter.
-
-    DATA(lv_cnt_semi)  = strlen( lv_line ) - strlen( replace( val = lv_line  sub = ';' with = '' occ = 0 ) ).
-    DATA(lv_cnt_comma) = strlen( lv_line ) - strlen( replace( val = lv_line  sub = ',' with = '' occ = 0 ) ).
-
-    rv_del = COND c( WHEN lv_cnt_semi >= lv_cnt_comma THEN ';' ELSE ',' ).
-
+  METHOD convert_matnr.
+    DATA: lv_in TYPE matnr.
+    lv_in = iv_matnr.
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+      EXPORTING  input  = lv_in
+      IMPORTING  output = rv_matnr.
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
   METHOD validate_rows.
+    REFRESH me->mt_alv.
 
-    DATA: ls_mara   TYPE mara,
-          ls_marc   TYPE marc,
-          ls_mbew   TYPE mbew,
-          lv_sloc   TYPE lgort_d,
-          lv_row_nr TYPE i.
+    " --- Collect unique keys for bulk reads ---
+    TYPES: BEGIN OF ty_matnr_key, matnr TYPE matnr, END OF ty_matnr_key.
+    DATA: lt_matnr_keys TYPE TABLE OF ty_matnr_key.
+    lt_matnr_keys = VALUE #( FOR <r> IN me->mt_upload ( matnr = <r>-matnr ) ).
+    SORT lt_matnr_keys BY matnr.
+    DELETE ADJACENT DUPLICATES FROM lt_matnr_keys COMPARING matnr.
 
-    LOOP AT it_rows INTO DATA(ls_row).
-      lv_row_nr = sy-tabix.
+    TYPES: BEGIN OF ty_werks_key, werks TYPE werks_d, END OF ty_werks_key.
+    DATA: lt_werks_keys TYPE TABLE OF ty_werks_key.
+    lt_werks_keys = VALUE #( FOR <r> IN me->mt_upload ( werks = <r>-site ) ).
+    SORT lt_werks_keys BY werks.
+    DELETE ADJACENT DUPLICATES FROM lt_werks_keys COMPARING werks.
 
-      DATA(ls_log) = VALUE ty_log_row(
-        row_nr = lv_row_nr
-        matnr  = ls_row-matnr
-        qty    = ls_row-qty
-        site   = ls_row-site
-        sloc   = ls_row-sloc
-        verpr  = ls_row-verpr
-        status = 'S' ).   "Default: Simulated (may become E or P)
+    TYPES: BEGIN OF ty_sloc_key, werks TYPE werks_d, lgort TYPE lgort_d, END OF ty_sloc_key.
+    DATA: lt_sloc_keys TYPE TABLE OF ty_sloc_key.
+    lt_sloc_keys = VALUE #( FOR <r> IN me->mt_upload ( werks = <r>-site lgort = <r>-sloc ) ).
+    SORT lt_sloc_keys BY werks lgort.
+    DELETE ADJACENT DUPLICATES FROM lt_sloc_keys COMPARING werks lgort.
 
-      " --- ERROR CHECKS (row is skipped on any error) ---
+    " --- Bulk reads ---
 
-      " 1. QTY > 0
-      IF ls_row-qty <= 0.
-        ls_log-status  = 'E'.
-        ls_log-message = |Row { lv_row_nr }: Quantity must be greater than zero (entered: { ls_row-qty })|.
-        APPEND ls_log TO ct_log.
-        CONTINUE.
-      ENDIF.
+    TYPES: BEGIN OF ty_mara, matnr TYPE matnr, meins TYPE meins, END OF ty_mara.
+    DATA: lt_mara TYPE HASHED TABLE OF ty_mara WITH UNIQUE KEY matnr.
+    IF lt_matnr_keys IS NOT INITIAL.
+      SELECT matnr, meins FROM mara
+        FOR ALL ENTRIES IN @lt_matnr_keys
+        WHERE matnr = @lt_matnr_keys-matnr
+        INTO TABLE @lt_mara.
+    ENDIF.
 
-      " 2. VERPR > 0
-      IF ls_row-verpr <= 0.
-        ls_log-status  = 'E'.
-        ls_log-message = |Row { lv_row_nr }: Cost price (VERPR) must be greater than zero (entered: { ls_row-verpr })|.
-        APPEND ls_log TO ct_log.
-        CONTINUE.
-      ENDIF.
+    TYPES: BEGIN OF ty_marc, matnr TYPE matnr, werks TYPE werks_d, END OF ty_marc.
+    DATA: lt_marc TYPE HASHED TABLE OF ty_marc WITH UNIQUE KEY matnr werks.
+    IF lt_matnr_keys IS NOT INITIAL.
+      SELECT matnr, werks FROM marc
+        FOR ALL ENTRIES IN @lt_matnr_keys
+        WHERE matnr = @lt_matnr_keys-matnr
+        INTO TABLE @lt_marc.
+    ENDIF.
 
-      " 3. MATNR not initial
-      IF ls_row-matnr IS INITIAL.
-        ls_log-status  = 'E'.
-        ls_log-message = |Row { lv_row_nr }: Material number is blank or could not be parsed|.
-        APPEND ls_log TO ct_log.
-        CONTINUE.
-      ENDIF.
+    TYPES: BEGIN OF ty_t001l, werks TYPE werks_d, lgort TYPE lgort_d, END OF ty_t001l.
+    DATA: lt_t001l TYPE HASHED TABLE OF ty_t001l WITH UNIQUE KEY werks lgort.
+    IF lt_sloc_keys IS NOT INITIAL.
+      SELECT werks, lgort FROM t001l
+        FOR ALL ENTRIES IN @lt_sloc_keys
+        WHERE werks = @lt_sloc_keys-werks
+          AND lgort = @lt_sloc_keys-lgort
+        INTO TABLE @lt_t001l.
+    ENDIF.
 
-      " 4. Material exists in MARA
-      SELECT SINGLE matnr maktx meins
-        FROM mara
-        INNER JOIN makt ON makt~matnr = mara~matnr AND makt~spras = @sy-langu
-        INTO @DATA(ls_mara_text)
-        WHERE mara~matnr = @ls_row-matnr.
+    " BUG FIX #5: T001W-KZPUR is not a standard ECC field and would fail
+    " activation. Use a plain plant-existence check instead.
+    TYPES: BEGIN OF ty_t001w, werks TYPE werks_d, END OF ty_t001w.
+    DATA: lt_t001w TYPE HASHED TABLE OF ty_t001w WITH UNIQUE KEY werks.
+    IF lt_werks_keys IS NOT INITIAL.
+      SELECT werks FROM t001w
+        FOR ALL ENTRIES IN @lt_werks_keys
+        WHERE werks = @lt_werks_keys-werks
+        INTO TABLE @lt_t001w.
+    ENDIF.
 
+    TYPES: BEGIN OF ty_mbew,
+             matnr TYPE matnr,
+             bwkey TYPE bwkey,
+             vprsv TYPE vprsv,
+             verpr TYPE verpr,
+           END OF ty_mbew.
+    DATA: lt_mbew TYPE HASHED TABLE OF ty_mbew WITH UNIQUE KEY matnr bwkey.
+    IF lt_matnr_keys IS NOT INITIAL.
+      SELECT matnr, bwkey, vprsv, verpr FROM mbew
+        FOR ALL ENTRIES IN @lt_matnr_keys
+        WHERE matnr = @lt_matnr_keys-matnr
+        INTO TABLE @lt_mbew.
+    ENDIF.
+
+    TYPES: BEGIN OF ty_makt, matnr TYPE matnr, maktx TYPE maktx, END OF ty_makt.
+    DATA: lt_makt TYPE HASHED TABLE OF ty_makt WITH UNIQUE KEY matnr.
+    IF lt_matnr_keys IS NOT INITIAL.
+      SELECT matnr, maktx FROM makt
+        FOR ALL ENTRIES IN @lt_matnr_keys
+        WHERE matnr = @lt_matnr_keys-matnr
+          AND spras = @sy-langu
+        INTO TABLE @lt_makt.
+    ENDIF.
+
+    " --- Validation loop ---
+    LOOP AT me->mt_upload ASSIGNING FIELD-SYMBOL(<lfs_row>).
+
+      DATA(ls_alv) = VALUE ty_alv_row(
+        row_nr = <lfs_row>-row_nr
+        matnr  = |{ <lfs_row>-matnr ALPHA = OUT }|
+        qty    = <lfs_row>-qty
+        site   = <lfs_row>-site
+        sloc   = <lfs_row>-sloc
+        verpr  = <lfs_row>-verpr
+      ).
+
+      DATA: lv_has_error   TYPE abap_bool,
+            lv_has_warning TYPE abap_bool.
+
+      " Check 1: Material exists in MARA
+      READ TABLE lt_mara ASSIGNING FIELD-SYMBOL(<ls_mara>)
+        WITH TABLE KEY matnr = <lfs_row>-matnr.
       IF sy-subrc <> 0.
-        ls_log-status  = 'E'.
-        ls_log-message = |Row { lv_row_nr }: Material { ls_row-matnr } not found in MARA|.
-        APPEND ls_log TO ct_log.
-        CONTINUE.
+        me->append_message(
+          EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: Material { ls_alv-matnr } not found in MARA. Row skipped.|
+          CHANGING  cs_alv = ls_alv ).
+        lv_has_error = abap_true.
+      ELSE.
+        ls_alv-meins = <ls_mara>-meins.
+        " Check 2: UoM resolvable
+        IF ls_alv-meins IS INITIAL.
+          me->append_message(
+            EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: Cannot resolve UoM (MARA-MEINS) for { ls_alv-matnr }. Row skipped.|
+            CHANGING  cs_alv = ls_alv ).
+          lv_has_error = abap_true.
+        ENDIF.
       ENDIF.
 
-      ls_log-maktx = ls_mara_text-maktx.
-      ls_log-meins = ls_mara_text-meins.
+      READ TABLE lt_makt ASSIGNING FIELD-SYMBOL(<ls_makt>)
+        WITH TABLE KEY matnr = <lfs_row>-matnr.
+      IF sy-subrc = 0.
+        ls_alv-maktx = <ls_makt>-maktx.
+      ENDIF.
 
-      " 5. Material active in plant (MARC exists)
-      SELECT SINGLE werks FROM marc
-        INTO @DATA(lv_werks_check)
-        WHERE matnr = @ls_row-matnr
-          AND werks = @ls_row-site.
-
+      " Check 3: Material extended to plant
+      READ TABLE lt_marc TRANSPORTING NO FIELDS
+        WITH TABLE KEY matnr = <lfs_row>-matnr
+                       werks = <lfs_row>-site.
       IF sy-subrc <> 0.
-        ls_log-status  = 'E'.
-        ls_log-message = |Row { lv_row_nr }: Material { ls_row-matnr } not extended to plant { ls_row-site } (no MARC record)|.
-        APPEND ls_log TO ct_log.
-        CONTINUE.
+        me->append_message(
+          EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: Material { ls_alv-matnr } not extended to plant { <lfs_row>-site } (MARC). Row skipped.|
+          CHANGING  cs_alv = ls_alv ).
+        lv_has_error = abap_true.
       ENDIF.
 
-      " 6. Storage location valid (T001L)
-      SELECT SINGLE lgort FROM t001l
-        INTO @DATA(lv_lgort_check)
-        WHERE werks = @ls_row-site
-          AND lgort = @ls_row-sloc.
-
+      " Check 4: Storage location valid
+      READ TABLE lt_t001l TRANSPORTING NO FIELDS
+        WITH TABLE KEY werks = <lfs_row>-site
+                       lgort = <lfs_row>-sloc.
       IF sy-subrc <> 0.
-        ls_log-status  = 'E'.
-        ls_log-message = |Row { lv_row_nr }: Storage location { ls_row-sloc } not found for plant { ls_row-site }|.
-        APPEND ls_log TO ct_log.
-        CONTINUE.
+        me->append_message(
+          EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: SLoc { <lfs_row>-sloc } not valid for plant { <lfs_row>-site } (T001L). Row skipped.|
+          CHANGING  cs_alv = ls_alv ).
+        lv_has_error = abap_true.
       ENDIF.
 
-      " --- Read MBEW for MAP / price control ---
-      SELECT SINGLE verpr lbkum salk3 vprsv
-        FROM mbew
-        INTO @DATA(ls_mbew_data)
-        WHERE matnr = @ls_row-matnr
-          AND bwkey = @ls_row-site.
-
-      ls_log-curr_map = ls_mbew_data-verpr.
-      ls_log-prc_ctrl = ls_mbew_data-vprsv.
-
-      " --- WARNING CHECKS (row is still processed) ---
-
-      " 7. Price control = S (Standard Price) — SAP will post PRD difference
-      IF ls_mbew_data-vprsv = 'S'.
-        ls_log-status  = 'W'.
-        ls_log-message = |Row { lv_row_nr }: Material uses Standard Price (S) — a price difference posting (PRD) will be generated by SAP|.
+      " Check 5: Quantity positive
+      IF <lfs_row>-qty <= 0.
+        me->append_message(
+          EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: Quantity { <lfs_row>-qty } must be > 0. Row skipped.|
+          CHANGING  cs_alv = ls_alv ).
+        lv_has_error = abap_true.
       ENDIF.
 
-      " 8. VERPR deviation > tolerance vs current MAP
-      IF ls_mbew_data-verpr > 0.
-        DATA(lv_deviation) = abs( ( ls_row-verpr - ls_mbew_data-verpr ) / ls_mbew_data-verpr * 100 ).
-        IF lv_deviation > gc_verpr_tol.
-          IF ls_log-status <> 'E'.
-            ls_log-status = 'W'.
-            DATA(lv_dev_msg) = |Row { lv_row_nr }: VERPR { ls_row-verpr } deviates { lv_deviation DECIMALS 1 }% from current MAP { ls_mbew_data-verpr } (tolerance { gc_verpr_tol }%)|.
-            ls_log-message = COND string(
-              WHEN ls_log-message IS INITIAL THEN lv_dev_msg
-              ELSE |{ ls_log-message } | && lv_dev_msg ).
+      " Check 6: Cost price positive
+      IF <lfs_row>-verpr <= 0.
+        me->append_message(
+          EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: VERPR { <lfs_row>-verpr } must be > 0. Row skipped.|
+          CHANGING  cs_alv = ls_alv ).
+        lv_has_error = abap_true.
+      ENDIF.
+
+      " Check 7: Plant must exist (BUG FIX #5 -- existence check only)
+      READ TABLE lt_t001w TRANSPORTING NO FIELDS
+        WITH TABLE KEY werks = <lfs_row>-site.
+      IF sy-subrc <> 0.
+        me->append_message(
+          EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: Plant { <lfs_row>-site } not found in T001W. Row skipped.|
+          CHANGING  cs_alv = ls_alv ).
+        lv_has_error = abap_true.
+      ENDIF.
+
+      " --- Warning checks ---
+      READ TABLE lt_mbew ASSIGNING FIELD-SYMBOL(<ls_mbew>)
+        WITH TABLE KEY matnr = <lfs_row>-matnr
+                       bwkey = <lfs_row>-site.
+      IF sy-subrc = 0.
+        ls_alv-pric_ctl = <ls_mbew>-vprsv.
+
+        " Warning 1: Standard price
+        IF <ls_mbew>-vprsv = 'S'.
+          me->append_message(
+            EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: WARNING -- Standard Price (S). SAP will post price difference to PRD account.|
+            CHANGING  cs_alv = ls_alv ).
+          lv_has_warning = abap_true.
+        ENDIF.
+
+        " Warning 2: VERPR deviation from MAP
+        IF <ls_mbew>-verpr > 0 AND <lfs_row>-verpr > 0.
+          DATA(lv_dev_pct) = abs( <lfs_row>-verpr - <ls_mbew>-verpr )
+                              / <ls_mbew>-verpr * 100.
+          IF lv_dev_pct > mc_deviation_pct.
+            me->append_message(
+              EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: WARNING -- VERPR { <lfs_row>-verpr } deviates { lv_dev_pct DECIMALS = 1 }% from MAP { <ls_mbew>-verpr } (limit: { mc_deviation_pct }%).|
+              CHANGING  cs_alv = ls_alv ).
+            lv_has_warning = abap_true.
+          ELSEIF <lfs_row>-verpr = <ls_mbew>-verpr.
+            me->append_message(
+              EXPORTING iv_msg = |Row { <lfs_row>-row_nr }: INFO -- VERPR equals current MAP. No MAP blending will occur.|
+              CHANGING  cs_alv = ls_alv ).
           ENDIF.
         ENDIF.
-      ELSE.
-        " 9. No existing stock — informational
-        IF ls_log-status = 'S'.
-          ls_log-status  = 'S'.
-          ls_log-message = |Row { lv_row_nr }: No existing stock at plant { ls_row-site } — first intake at this plant/material|.
-        ENDIF.
       ENDIF.
 
-      APPEND ls_log TO ct_log.
+      IF lv_has_error = abap_true.
+        ls_alv-status = mc_status_error.
+        ls_alv-scol   = me->set_row_color( mc_status_error ).
+      ELSEIF lv_has_warning = abap_true.
+        ls_alv-status = mc_status_warn.
+        ls_alv-scol   = me->set_row_color( mc_status_warn ).
+      ELSE.
+        ls_alv-status = mc_status_sim.
+        ls_alv-scol   = me->set_row_color( mc_status_sim ).
+      ENDIF.
 
+      APPEND ls_alv TO me->mt_alv.
+      CLEAR: lv_has_error, lv_has_warning.
     ENDLOOP.
-
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
   METHOD post_rows.
+    DATA(ls_bapi_header) = me->build_bapi_header( ).
 
-    DATA: ls_header  TYPE bapi2017_gm_head_01,
-          lt_items   TYPE TABLE OF bapi2017_gm_item_create,
-          ls_item    TYPE bapi2017_gm_item_create,
-          lt_return  TYPE TABLE OF bapiret2,
-          ls_return  TYPE bapiret2,
-          lv_mblnr   TYPE bapi2017_gm_head_ret-mat_doc,
-          lv_mjahr   TYPE bapi2017_gm_head_ret-doc_year.
+    " BUG FIX #4: GM code must match movement type.
+    " 561 = Initial stock entry -> GM code '09'.
+    " 501 = GR without PO       -> GM code '04'.
+    DATA(lv_gm_code) = COND bapi2017_gm_code-gm_code(
+                         WHEN mv_bwart = '561' THEN '09'
+                         ELSE '04' ).
 
-    " Fill header once (same for all rows in one run)
-    ls_header-pstng_date = p_budat.
-    ls_header-doc_date   = p_budat.
-    ls_header-header_txt = p_bktxt.
-    ls_header-ref_doc_no = p_xblnr.
-    ls_header-gr_gi_slip_no = space.
+    DATA: lt_items     TYPE TABLE OF bapi2017_gm_item_create,
+          lt_serialnos TYPE TABLE OF bapi2017_gm_serial_number,
+          ls_hd_ret    TYPE bapi2017_gm_head_ret,
+          lv_matdoc    TYPE mblnr,
+          lv_mat_year  TYPE mjahr,
+          lt_return    TYPE TABLE OF bapiret2.
 
-    LOOP AT ct_log ASSIGNING FIELD-SYMBOL(<ls_log>).
+    " BUG FIX #3: declare lv_bapi_ok outside the loop so it can be
+    " reset explicitly at the start of each iteration.
+    DATA: lv_bapi_ok TYPE abap_bool.
 
-      " Only post rows with status 'S' (Simulated/valid) or 'W' (Warning — still post)
-      IF <ls_log>-status <> 'S' AND <ls_log>-status <> 'W'.
+    LOOP AT me->mt_alv ASSIGNING FIELD-SYMBOL(<lfs_alv>).
+
+      CHECK <lfs_alv>-status <> mc_status_error.
+
+      READ TABLE me->mt_upload ASSIGNING FIELD-SYMBOL(<lfs_upload>)
+        WITH KEY row_nr = <lfs_alv>-row_nr.
+      IF sy-subrc <> 0.
+        me->append_message(
+          EXPORTING iv_msg = |Internal error: no upload row for ALV row { <lfs_alv>-row_nr }.|
+          CHANGING  cs_alv = <lfs_alv> ).
+        <lfs_alv>-status = mc_status_error.
         CONTINUE.
       ENDIF.
 
-      IF mv_test_mode = abap_true.
-        " Test mode — keep status as 'S', do not call BAPI
-        <ls_log>-status  = 'S'.
-        IF <ls_log>-message IS INITIAL.
-          <ls_log>-message = 'SIMULATION — no posting made'.
-        ELSE.
-          <ls_log>-message = <ls_log>-message && ' | SIMULATION — no posting made'.
+      " Test mode: no BAPI call
+      IF p_test = abap_true.
+        me->append_message(
+          EXPORTING iv_msg = 'Test Mode: posting simulated -- no material document created.'
+          CHANGING  cs_alv = <lfs_alv> ).
+        IF <lfs_alv>-status <> mc_status_warn.
+          <lfs_alv>-status = mc_status_sim.
+          <lfs_alv>-scol   = me->set_row_color( mc_status_sim ).
         ENDIF.
         CONTINUE.
       ENDIF.
 
-      " Build single-item BAPI call per row
-      " (one document per row for clean error isolation)
-      CLEAR: lt_items, lt_return, lv_mblnr, lv_mjahr.
+      " Live mode
+      CLEAR: lt_items, lt_return, lv_matdoc, lv_mat_year.
+      lv_bapi_ok = abap_true.   " BUG FIX #3: reset per iteration
 
-      ls_item-material    = <ls_log>-matnr.
-      ls_item-plant       = <ls_log>-site.
-      ls_item-stge_loc    = <ls_log>-sloc.
-      ls_item-move_type   = mv_mvt_intake.
-      ls_item-entry_qnt   = <ls_log>-qty.
-      ls_item-entry_uom   = <ls_log>-meins.
-      ls_item-no_more_gr  = space.
-      " Pass VERPR as valuation price — SAP recalculates MAP automatically
-      ls_item-val_sales_order_currency = <ls_log>-verpr.  "BAPI valuation price field
-
-      APPEND ls_item TO lt_items.
-
-      DATA(ls_head_ret) = VALUE bapi2017_gm_head_ret( ).
+      APPEND me->build_bapi_item(
+        is_row   = <lfs_upload>
+        iv_meins = <lfs_alv>-meins ) TO lt_items.
 
       CALL FUNCTION 'BAPI_GOODSMVT_CREATE'
         EXPORTING
-          goodsmvt_header  = ls_header
-          goodsmvt_code    = VALUE bapi2017_gm_code( gm_code = COND #( WHEN mv_mvt_intake = gc_mvt_561 THEN '04' ELSE '01' ) )
+          goodsmvt_header  = ls_bapi_header
+          goodsmvt_code    = VALUE bapi2017_gm_code( gm_code = lv_gm_code )
         IMPORTING
-          goodsmvt_headret = ls_head_ret
+          goodsmvt_headret = ls_hd_ret
+          materialdocument = lv_matdoc
+          matdocumentyear  = lv_mat_year
         TABLES
-          goodsmvt_item    = lt_items
-          return           = lt_return.
+          goodsmvt_item         = lt_items
+          goodsmvt_serialnumber = lt_serialnos
+          return                = lt_return.
 
-      " Check for errors in BAPI return
-      DATA(lv_has_error) = abap_false.
-      LOOP AT lt_return INTO ls_return WHERE type = 'E' OR type = 'A'.
-        lv_has_error = abap_true.
-        EXIT.
-      LOOP AT lt_return INTO ls_return WHERE type = 'S' OR type = 'I'.
-        EXIT.
-      ENDLOOP.
+      LOOP AT lt_return ASSIGNING FIELD-SYMBOL(<lfs_ret>).
+        CASE <lfs_ret>-type.
+          WHEN 'E' OR 'A'.
+            me->append_message(
+              EXPORTING iv_msg = |BAPI Error: { <lfs_ret>-message }|
+              CHANGING  cs_alv = <lfs_alv> ).
+            lv_bapi_ok = abap_false.
+          WHEN 'W'.
+            me->append_message(
+              EXPORTING iv_msg = |BAPI Warning: { <lfs_ret>-message }|
+              CHANGING  cs_alv = <lfs_alv> ).
+        ENDCASE.
       ENDLOOP.
 
-      IF lv_has_error = abap_true.
-        " Roll back this document
-        CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
-        <ls_log>-status  = 'E'.
-        LOOP AT lt_return INTO ls_return WHERE type = 'E' OR type = 'A'.
-          <ls_log>-message = |{ <ls_log>-message } { ls_return-message }|.
-        ENDLOOP.
-        CONDENSE <ls_log>-message.
-      ELSE.
-        " Commit and record document number
+      IF lv_bapi_ok = abap_true AND lv_matdoc IS NOT INITIAL.
         CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
           EXPORTING wait = abap_true.
-        <ls_log>-status = 'P'.
-        <ls_log>-mblnr  = ls_head_ret-mat_doc.
-        <ls_log>-mjahr  = ls_head_ret-doc_year.
-        IF <ls_log>-message IS INITIAL.
-          <ls_log>-message = |Posted: { ls_head_ret-mat_doc } / { ls_head_ret-doc_year }|.
-        ELSE.
-          <ls_log>-message = <ls_log>-message && | | && |Posted: { ls_head_ret-mat_doc } / { ls_head_ret-doc_year }|.
-        ENDIF.
+        <lfs_alv>-status = mc_status_posted.
+        <lfs_alv>-matdoc = lv_matdoc.
+        <lfs_alv>-scol   = me->set_row_color( mc_status_posted ).
+        me->append_message(
+          EXPORTING iv_msg = |Material document { lv_matdoc } / { lv_mat_year } created.|
+          CHANGING  cs_alv = <lfs_alv> ).
+      ELSE.
+        CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
+        <lfs_alv>-status = mc_status_error.
+        <lfs_alv>-scol   = me->set_row_color( mc_status_error ).
       ENDIF.
 
     ENDLOOP.
-
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
-  METHOD display_alv.
-
-    IF go_alv_grid IS BOUND.
-      go_alv_grid->refresh_table_display(
-        EXPORTING is_stable = gs_stable ).
-      RETURN.
-    ENDIF.
-
-    go_alv_cont = NEW cl_gui_custom_container(
-      container_name = 'CC_ALV' ).
-
-    go_alv_grid = NEW cl_gui_alv_grid(
-      i_parent = go_alv_cont ).
-
-    DATA(lt_fcat)   = build_fieldcat( ).
-    DATA(ls_layout) = build_layout( ).
-
-    go_alv_grid->set_table_for_first_display(
-      EXPORTING
-        is_layout       = ls_layout
-        it_fieldcatalog = lt_fcat
-      CHANGING
-        it_outtab       = gt_log ).
-
+  METHOD build_bapi_header.
+    rs_header-pstng_date     = p_pdate.
+    rs_header-doc_date       = p_pdate.
+    rs_header-header_txt     = p_htext.
+    rs_header-ref_doc_no     = p_ref.
+    rs_header-ver_gr_gi_slip = '1'.
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
-  METHOD build_fieldcat.
+  METHOD build_bapi_item.
+    rs_item-material   = is_row-matnr.
+    rs_item-plant      = is_row-site.
+    rs_item-stge_loc   = is_row-sloc.
+    rs_item-move_type  = mv_bwart.
+    rs_item-entry_qnt  = is_row-qty.
+    rs_item-entry_uom  = iv_meins.
+    rs_item-move_price = is_row-verpr.
+    rs_item-price_unit = 1.
+    rs_item-spec_stock = space.
+  ENDMETHOD.
 
-    DATA ls_fc TYPE lvc_s_fcat.
+  METHOD build_fcat.
+    DATA: ls_fcat TYPE lvc_s_fcat.
 
-    DEFINE add_field.
-      CLEAR ls_fc.
-      ls_fc-fieldname = &1.
-      ls_fc-coltext   = &2.
-      ls_fc-outputlen = &3.
-      APPEND ls_fc TO rt_fcat.
+    DEFINE add_fcat.
+      CLEAR ls_fcat.
+      ls_fcat-fieldname = &1.
+      ls_fcat-coltext   = &2.
+      ls_fcat-outputlen = &3.
+      APPEND ls_fcat TO ct_fcat.
     END-OF-DEFINITION.
 
-    add_field 'ROW_NR'   'Row #'        5.
-    add_field 'MATNR'    'Material'    18.
-    add_field 'MAKTX'    'Description' 30.
-    add_field 'QTY'      'Qty'         12.
-    add_field 'MEINS'    'UoM'          5.
-    add_field 'SITE'     'Site'         5.
-    add_field 'SLOC'     'SLoc'         5.
-    add_field 'VERPR'    'Cost Price'  12.
-    add_field 'CURR_MAP' 'Current MAP' 12.
-    add_field 'PRC_CTRL' 'PCtrl'        5.
-    add_field 'STATUS'   'Status'       1.
-    add_field 'MBLNR'    'Mat.Doc.'    10.
-    add_field 'MJAHR'    'Year'         4.
-    add_field 'MESSAGE'  'Message'     80.
-
+    add_fcat 'ROW_NR'   'Row #'       6.
+    add_fcat 'MATNR'    'Material'   20.
+    add_fcat 'MAKTX'    'Description'30.
+    add_fcat 'QTY'      'Qty'        12.
+    add_fcat 'MEINS'    'UoM'         5.
+    add_fcat 'SITE'     'Site'        6.
+    add_fcat 'SLOC'     'SLoc'        6.
+    add_fcat 'VERPR'    'Cost Price' 12.
+    add_fcat 'PRIC_CTL' 'Prc.Ctl'    6.
+    add_fcat 'STATUS'   'Status'     12.
+    add_fcat 'MATDOC'   'Mat.Doc.'   10.
+    add_fcat 'MESSAGE'  'Message'    80.
   ENDMETHOD.
 
-*----------------------------------------------------------------------*
   METHOD build_layout.
-
     rs_layout-zebra      = abap_true.
     rs_layout-cwidth_opt = abap_true.
+    rs_layout-sel_mode   = 'A'.
+    rs_layout-ctab_fname = 'SCOL'.
+  ENDMETHOD.
 
-    IF mv_test_mode = abap_true.
-      rs_layout-info_fname = 'STATUS'.
-      " Banner text shown in grid header
-      rs_layout-grid_title =
-        '*** SIMULATION MODE ACTIVE — NO POSTINGS HAVE BEEN MADE ***'.
+  METHOD set_row_color.
+    DATA: ls_color TYPE lvc_s_scol.
+    CASE iv_status.
+      WHEN mc_status_error.
+        ls_color-color-col = 6.
+        ls_color-color-int = 1.
+        ls_color-color-inv = 0.
+      WHEN mc_status_warn.
+        ls_color-color-col = 3.
+        ls_color-color-int = 1.
+        ls_color-color-inv = 0.
+      WHEN mc_status_sim.
+        ls_color-color-col = 5.
+        ls_color-color-int = 1.
+        ls_color-color-inv = 0.
+      WHEN mc_status_posted.
+        ls_color-color-col = 1.
+        ls_color-color-int = 1.
+        ls_color-color-inv = 0.
+    ENDCASE.
+    APPEND ls_color TO rt_color.
+  ENDMETHOD.
+
+  METHOD append_message.
+    IF cs_alv-message IS INITIAL.
+      cs_alv-message = iv_msg.
     ELSE.
-      rs_layout-grid_title = 'Mass Stock Intake — Posting Log'.
+      cs_alv-message = cs_alv-message && ' // ' && iv_msg.
     ENDIF.
+  ENDMETHOD.
 
+  METHOD display_alv.
+    IF mo_container IS INITIAL.
+      mo_container = NEW cl_gui_custom_container( container_name = mc_alv_container ).
+      mo_alv_grid  = NEW cl_gui_alv_grid( i_parent = mo_container ).
+
+      DATA: lt_fcat   TYPE lvc_t_fcat,
+            ls_layout TYPE lvc_s_layo.
+
+      me->build_fcat( CHANGING ct_fcat = lt_fcat ).
+      ls_layout = me->build_layout( ).
+
+      mo_alv_grid->set_table_for_first_display(
+        EXPORTING
+          is_layout       = ls_layout
+          i_save          = abap_true
+          i_default       = abap_true
+        CHANGING
+          it_outtab       = me->mt_alv
+          it_fieldcatalog = lt_fcat ).
+    ELSE.
+      mo_alv_grid->refresh_table_display( is_stable = gs_stable ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD call_screen_0100.
+    CALL SCREEN 0100.
   ENDMETHOD.
 
 ENDCLASS.

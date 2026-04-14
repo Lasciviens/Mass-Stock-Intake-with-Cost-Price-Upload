@@ -1,51 +1,84 @@
-*&---------------------------------------------------------------------*
-*&  Include           ZMM_MASS_STOCK_INTAKE_SSC
-*&  Selection screen definition
-*&---------------------------------------------------------------------*
+*&======================================================================*
+*&  Include  ZMM_MASS_STOCK_INTAKE_SSC
+*&  Selection screen definition.  Spec reference: Section 4.
+*&======================================================================*
 
-*----------------------------------------------------------------------*
-* FILE UPLOAD
-*----------------------------------------------------------------------*
-SELECTION-SCREEN BEGIN OF BLOCK b_file WITH FRAME TITLE TEXT-t01.
-  PARAMETERS: p_file TYPE localfile OBLIGATORY.
+" -----------------------------------------------------------------------
+"  BLOCK 1: File Upload
+"  The file parameter uses RLGRAP-FILENAME which gives automatic
+"  F4 value help (file browser dialog) via AT SELECTION-SCREEN below.
+" -----------------------------------------------------------------------
+SELECTION-SCREEN BEGIN OF BLOCK b_file WITH FRAME TITLE TEXT-b01.
+  PARAMETERS: p_file TYPE rlgrap-filename OBLIGATORY.
 SELECTION-SCREEN END OF BLOCK b_file.
 
 SELECTION-SCREEN SKIP 1.
 
-*----------------------------------------------------------------------*
-* POSTING OPTIONS
-*----------------------------------------------------------------------*
-SELECTION-SCREEN BEGIN OF BLOCK b_post WITH FRAME TITLE TEXT-t02.
-
-  " Movement type pair (radio group)
-  PARAMETERS: rb_561 RADIOBUTTON GROUP mvt DEFAULT 'X',
-              rb_501 RADIOBUTTON GROUP mvt.
-
-  SELECTION-SCREEN SKIP 1.
-
-  PARAMETERS: p_budat TYPE budat DEFAULT sy-datum OBLIGATORY.
-  PARAMETERS: p_bktxt TYPE bktxt.
-  PARAMETERS: p_xblnr TYPE xblnr_d.
-
-SELECTION-SCREEN END OF BLOCK b_post.
+" -----------------------------------------------------------------------
+"  BLOCK 2: Movement Type Selection
+"  Default: 561 / 562  (Initial stock entry, no PO)
+"           561 is used for posting; 562 (reversal) is informational.
+"  Alternative: 501 / 502 (Goods receipt without Purchase Order)
+" -----------------------------------------------------------------------
+SELECTION-SCREEN BEGIN OF BLOCK b_mvt WITH FRAME TITLE TEXT-b02.
+SELECTION-SCREEN BEGIN OF LINE.
+  " DEFAULT 'X' sets 561/562 as the pre-selected option on first load.
+  PARAMETERS: p_561 RADIOBUTTON GROUP mvt DEFAULT 'X'.
+  SELECTION-SCREEN COMMENT 3(40) TEXT-r01 FOR FIELD p_561.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN BEGIN OF LINE.
+  PARAMETERS: p_501 RADIOBUTTON GROUP mvt.
+  SELECTION-SCREEN COMMENT 3(40) TEXT-r02 FOR FIELD p_501.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN END OF BLOCK b_mvt.
 
 SELECTION-SCREEN SKIP 1.
 
-*----------------------------------------------------------------------*
-* TEST MODE
-*----------------------------------------------------------------------*
-SELECTION-SCREEN BEGIN OF BLOCK b_test WITH FRAME TITLE TEXT-t03.
+" -----------------------------------------------------------------------
+"  BLOCK 3: Document Header Parameters
+" -----------------------------------------------------------------------
+SELECTION-SCREEN BEGIN OF BLOCK b_doc WITH FRAME TITLE TEXT-b03.
+
+  " Posting date defaults to today (sy-datum is evaluated at runtime).
+  PARAMETERS: p_pdate TYPE budat OBLIGATORY DEFAULT sy-datum.
+
+  " Document header text -- applied to the material document header.
+  " BKTXT is the standard type for material document header text (max 25).
+  PARAMETERS: p_htext TYPE bktxt.
+
+  " Optional reference -- e.g. 'Nedleggelse 1659'.
+  " XBLNR_D: standard ECC reference document number, max 16 chars.
+  PARAMETERS: p_ref TYPE xblnr_d.
+
+SELECTION-SCREEN END OF BLOCK b_doc.
+
+SELECTION-SCREEN SKIP 1.
+
+" -----------------------------------------------------------------------
+"  BLOCK 4: Test Mode (Simulation)
+"  Spec: "TEST MODE defaults to active so that accidental live postings
+"         cannot occur on the first execution."
+"  DEFAULT 'X' ensures the checkbox is pre-ticked every time the user
+"  opens the report.
+" -----------------------------------------------------------------------
+SELECTION-SCREEN BEGIN OF BLOCK b_test WITH FRAME TITLE TEXT-b04.
+SELECTION-SCREEN BEGIN OF LINE.
   PARAMETERS: p_test AS CHECKBOX DEFAULT 'X'.
+  " TEXT-t01 should read:
+  " "TEST MODE (Simulation) -- Check to simulate, uncheck for LIVE posting"
+  SELECTION-SCREEN COMMENT 3(60) TEXT-t01 FOR FIELD p_test.
+SELECTION-SCREEN END OF LINE.
 SELECTION-SCREEN END OF BLOCK b_test.
 
-*----------------------------------------------------------------------*
-* SELECTION SCREEN EVENTS
-*----------------------------------------------------------------------*
+" -----------------------------------------------------------------------
+"  F4 HELP: Opens the standard SAP local file browser for p_file.
+"  Auth object S_GUI is required (Section 7).
+" -----------------------------------------------------------------------
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
-  " Open file browser dialog (F4 help)
-  CALL FUNCTION 'KD_GET_FILENAME_ON_F4'
+  CALL FUNCTION 'F4_FILENAME'
     EXPORTING
-      static    = abap_true
-      mask      = '*.csv;*.xlsx'
-    CHANGING
-      file_name = p_file.
+      program_name  = sy-cprog
+      dynpro_number = sy-dynnr
+      field_name    = 'P_FILE'
+    IMPORTING
+      file_name     = p_file.
