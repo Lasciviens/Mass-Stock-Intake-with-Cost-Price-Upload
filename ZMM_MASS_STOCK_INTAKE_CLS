@@ -40,11 +40,11 @@ CLASS lcl_main DEFINITION.
         RETURNING VALUE(rv_ok) TYPE abap_bool,
 
       parse_csv
-        IMPORTING iv_path      TYPE string
+        IMPORTING iv_path      TYPE rlgrap-filename
         RETURNING VALUE(rv_ok) TYPE abap_bool,
 
       parse_xlsx
-        IMPORTING iv_path      TYPE string
+        IMPORTING iv_path      TYPE rlgrap-filename
         RETURNING VALUE(rv_ok) TYPE abap_bool,
 
       convert_matnr
@@ -498,13 +498,15 @@ CLASS lcl_main IMPLEMENTATION.
     " BUG FIX #4: GM code must match movement type.
     " 561 = Initial stock entry -> GM code '09'.
     " 501 = GR without PO       -> GM code '04'.
-    DATA(lv_gm_code) = COND bapi2017_gm_code-gm_code(
-                         WHEN mv_bwart = '561' THEN '09'
-                         ELSE '04' ).
+    DATA: lv_gm_code TYPE c LENGTH 2.
+    IF mv_bwart = '561'.
+      lv_gm_code = '09'.
+    ELSE.
+      lv_gm_code = '04'.
+    ENDIF.
 
-    DATA: lt_items     TYPE TABLE OF bapi2017_gm_item_create,
-          lt_serialnos TYPE TABLE OF bapi2017_gm_serial_number,
-          ls_hd_ret    TYPE bapi2017_gm_head_ret,
+    DATA: lt_items  TYPE TABLE OF bapi2017_gm_item_create,
+          ls_hd_ret TYPE bapi2017_gm_head_ret,
           lv_matdoc    TYPE mblnr,
           lv_mat_year  TYPE mjahr,
           lt_return    TYPE TABLE OF bapiret2.
@@ -556,9 +558,8 @@ CLASS lcl_main IMPLEMENTATION.
           materialdocument = lv_matdoc
           matdocumentyear  = lv_mat_year
         TABLES
-          goodsmvt_item         = lt_items
-          goodsmvt_serialnumber = lt_serialnos
-          return                = lt_return.
+          goodsmvt_item = lt_items
+          return        = lt_return.
 
       LOOP AT lt_return ASSIGNING FIELD-SYMBOL(<lfs_ret>).
         CASE <lfs_ret>-type.
